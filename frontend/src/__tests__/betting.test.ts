@@ -1,0 +1,89 @@
+import { describe, expect, it } from 'vitest'
+
+import { formatPercent, strongestEdge, parlaySummary, recommendationSummary, teamStatSummary, syncStatusSummary } from '../betting'
+
+describe('betting UI helpers', () => {
+  it('formats percentages for probability displays', () => {
+    expect(formatPercent(0.6154)).toBe('61.5%')
+  })
+
+  it('finds the strongest positive edge', () => {
+    const edge = strongestEdge({
+      home: { edge: 0.08, expected_value_per_10: 1.2 },
+      draw: { edge: -0.04, expected_value_per_10: -0.7 },
+      away: { edge: 0.03, expected_value_per_10: 0.4 },
+    })
+
+    expect(edge?.outcome).toBe('home')
+  })
+
+  it('summarizes parlay probability from independent legs', () => {
+    const summary = parlaySummary([
+      { label: 'USA', probability: 0.6, american_odds: -110 },
+      { label: 'Brazil', probability: 0.7, american_odds: -150 },
+    ])
+
+    expect(summary.combinedProbability).toBeCloseTo(0.42)
+    expect(summary.decimalOdds).toBeGreaterThan(3)
+  })
+
+  it('summarizes recommendation sections for the bottom panel', () => {
+    const summary = recommendationSummary({
+      best_singles: [{ edge: 0.052, expected_value_per_10: 1.44 }],
+      game_parlays: [
+        {
+          mode: 'simple',
+          fixture_id: 'game-1',
+          match: 'A vs B',
+          legs: [],
+          combined_probability: 0.54,
+          decimal_odds: 2.1,
+          expected_value_per_10: 1.2,
+          risk_level: 'low',
+          reason: 'Positive EV moneyline pick.',
+        },
+      ],
+      day_parlays: [
+        {
+          mode: 'simple',
+          date: '2026-06-12',
+          legs: [],
+          combined_probability: 0.31,
+          decimal_odds: 4.2,
+          expected_value_per_10: 2.1,
+          risk_level: 'medium',
+          reason: 'Positive EV day parlay.',
+        },
+      ],
+      avoid: [{ reason: 'No real moneyline odds available.' }, { reason: 'No positive EV edge above threshold.' }],
+      warning: 'Strategy simulator only.',
+    })
+
+    expect(summary.bestEdge).toBe('5.2%')
+    expect(summary.singleCount).toBe(1)
+    expect(summary.gameParlayCount).toBe(1)
+    expect(summary.dayParlayCount).toBe(1)
+    expect(summary.avoidCount).toBe(2)
+  })
+
+  it('summarizes team stats for match detail cards', () => {
+    const summary = teamStatSummary({ matches: 7, shots: 92, xg_for: 11.6, goals: 10, source: 'StatsBomb Open Data' })
+
+    expect(summary).toEqual({
+      source: 'StatsBomb Open Data',
+      matches: '7',
+      xgPerMatch: '1.66',
+      shotsPerMatch: '13.1',
+      goalsPerMatch: '1.43',
+      record: '0-0-0',
+      points: '0 pts',
+      goalsAgainst: '0 GA',
+    })
+  })
+
+  it('summarizes auto-sync status for the dashboard', () => {
+    expect(syncStatusSummary({ enabled: true, stale: false, last_success_at: '2026-06-13T20:00:00Z' }).label).toContain('Auto-sync on')
+    expect(syncStatusSummary({ enabled: true, stale: true, last_error: 'quota exceeded' }).tone).toBe('stale')
+    expect(syncStatusSummary({ enabled: false, stale: false }).label).toBe('Auto-sync off')
+  })
+})

@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+data/*.sqlite3
+data/model/
+frontend/dist/
+frontend/node_modules/
+*.tsbuildinfo
+.env

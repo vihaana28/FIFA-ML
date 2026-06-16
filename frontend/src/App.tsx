@@ -1,15 +1,23 @@
 import { Activity, AlertTriangle, BarChart3, ChevronDown, ChevronRight, Plus, RefreshCcw, Target, Trophy } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { apiGet, DASHBOARD_POLL_INTERVAL_MS, type Fixture, type FixtureDetail, type Prediction, type Recommendations, type SyncStatus } from './api'
+import { apiGet, DASHBOARD_POLL_INTERVAL_MS, type BetRecommendation, type Fixture, type FixtureDetail, type ParlayMode, type Prediction, type RecommendedParlay, type Recommendations, type SyncStatus, type TournamentProjection } from './api'
 import { formatPercent, parlaySummary, recommendationSummary, strongestEdge, syncStatusSummary, teamStatSummary, type ParlayLeg } from './betting'
 import { dateGroupKey, gameTimeLabel, groupFixturesByDate, kickoffLabel } from './fixtureGroups'
+import { qualificationLabel, winnerTone } from './tournament'
 
 const outcomeLabels = {
   home: 'Home',
   draw: 'Draw',
   away: 'Away',
 } as const
+
+function recommendedLegLabel(leg: BetRecommendation | RecommendedParlay): string {
+  if ('selection' in leg) {
+    return `${leg.selection} / ${leg.match}`
+  }
+  return `${leg.match ?? leg.date ?? 'Game parlay'} / ${leg.reason}`
+}
 
 function App() {
   const [fixtures, setFixtures] = useState<Fixture[]>([])
@@ -18,8 +26,10 @@ function App() {
   const [prediction, setPrediction] = useState<Prediction | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [recommendations, setRecommendations] = useState<Recommendations | null>(null)
+  const [tournamentProjection, setTournamentProjection] = useState<TournamentProjection | null>(null)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [parlayLegs, setParlayLegs] = useState<ParlayLeg[]>([])
+  const [parlayMode, setParlayMode] = useState<ParlayMode>('simple')
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(true)
 
@@ -45,14 +55,22 @@ function App() {
       .catch((err: Error) => setError(err.message))
   }
 
+  function loadTournamentProjection() {
+    return apiGet<TournamentProjection>('/tournament/projection')
+      .then(setTournamentProjection)
+      .catch((err: Error) => setError(err.message))
+  }
+
   useEffect(() => {
     void loadFixtures()
     void loadRecommendations()
     void loadSyncStatus()
+    void loadTournamentProjection()
     const interval = window.setInterval(() => {
       void loadFixtures()
       void loadRecommendations()
       void loadSyncStatus()
+      void loadTournamentProjection()
     }, DASHBOARD_POLL_INTERVAL_MS)
     return () => window.clearInterval(interval)
   }, [])
@@ -83,6 +101,10 @@ function App() {
   const syncSummary = syncStatusSummary(syncStatus)
   const matrixCells = prediction?.score_matrix.filter((cell) => cell.score !== 'other').slice(0, 36) ?? []
   const fixtureDateGroups = useMemo(() => groupFixturesByDate(fixtures), [fixtures])
+  const selectedGameParlay = recommendations?.game_parlays.find(
+    (item) => item.fixture_id === selectedId && item.mode === parlayMode,
+  )
+  const dayParlays = recommendations?.day_parlays.filter((item) => item.mode === parlayMode) ?? []
 
   useEffect(() => {
     const selected = fixtures.find((fixture) => fixture.id === selectedId)
@@ -262,6 +284,23 @@ function App() {
                 </section>
               </div>
 
+              <section className="panel-block selected-parlay">
+                <h3><Target size={17} /> Best parlay for this game</h3>
+                {selectedGameParlay && selectedGameParlay.legs.length > 0 ? (
+                  <div className={`parlay-card ${selectedGameParlay.risk_level}`}>
+                    <strong>{formatPercent(selectedGameParlay.combined_probability)} probability</strong>
+                    <span>{selectedGameParlay.decimal_odds.toFixed(2)} decimal odds</span>
+                    <span>${selectedGameParlay.expected_value_per_10.toFixed(2)} EV per $10</span>
+                    <small>{selectedGameParlay.risk_level} risk / {selectedGameParlay.reason}</small>
+                    {selectedGameParlay.legs.map((leg, index) => (
+                      <small key={`${selectedGameParlay.fixture_id}-${index}`}>{recommendedLegLabel(leg)}</small>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted">{selectedGameParlay?.reason ?? 'No parlay available for this game and mode.'}</p>
+                )}
+              </section>
+
               <section className="panel-block stats-block">
                 <h3>Team stat profiles</h3>
                 <div className="stats-pair">
@@ -326,6 +365,90 @@ function App() {
         </aside>
       </section>
 
+      <section className="tournament-panel">
+        <div className="tournament-head">
+          <div>
+            <p className="eyebrow">Tournament Projection</p>
+            <h2>Predicted groups and bracket path.</h2>
+          </div>
+          {tournamentProjection && (
+            <div className="champion-callout">
+              <span>Projected champion</span>
+              <strong>{tournamentProjection.champion.team_name}</strong>
+              <small>{formatPercent(tournamentProjection.champion.title_probability)} path probability</small>
+            </div>
+          )}
+        </div>
+        {tournamentProjection ? (
+          <>
+            <div className="projection-meta">
+              <span>{tournamentProjection.model_version}</span>
+              <span>{tournamentProjection.qualifiers_count} projected qualifiers</span>
+              <span>{tournamentProjection.notes[0]}</span>
+            </div>
+            <div className="group-projection-grid">
+              {tournamentProjection.group_rankings.map((group) => (
+                <section className="group-table" key={group.group}>
+                  <h3>{group.group}</h3>
+                  <div className="group-table-head">
+                    <span>#</span>
+                    <span>Team</span>
+                    <span>Pts</span>
+                    <span>GD</span>
+                    <span>Path</span>
+                  </div>
+                  {group.teams.map((team) => (
+                    <div className={`group-table-row ${team.qualification}`} key={team.team_id}>
+                      <span>{team.rank}</span>
+                      <strong>{team.team_name}</strong>
+                      <span>{team.points.toFixed(1)}</span>
+                      <span>{team.goal_difference >= 0 ? '+' : ''}{team.goal_difference.toFixed(1)}</span>
+                      <small>{qualificationLabel(team.qualification)}</small>
+                    </div>
+                  ))}
+                </section>
+              ))}
+            </div>
+
+            <section className="bracket-stage">
+              <div>
+                <p className="eyebrow">Projected Knockout Bracket</p>
+                <h2>One deterministic path from the current model.</h2>
+              </div>
+              <div className="bracket-scroll" aria-label="Projected knockout bracket">
+                {tournamentProjection.bracket.map((round) => (
+                  <section className="bracket-round" key={round.round}>
+                    <h3>{round.round}</h3>
+                    <div className="bracket-match-list">
+                      {round.matches.map((match) => (
+                        <article className="bracket-match" key={`${round.round}-${match.slot}`}>
+                          <div className={winnerTone(match.home_team, match.winner)}>
+                            <small>{match.home_seed}</small>
+                            <strong>{match.home_team}</strong>
+                            <span>{match.expected_goals.home.toFixed(2)}</span>
+                          </div>
+                          <div className={winnerTone(match.away_team, match.winner)}>
+                            <small>{match.away_seed}</small>
+                            <strong>{match.away_team}</strong>
+                            <span>{match.expected_goals.away.toFixed(2)}</span>
+                          </div>
+                          <footer>
+                            <span>{match.winner}</span>
+                            <strong>{formatPercent(match.winner_probability)}</strong>
+                          </footer>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : (
+          <p className="muted">Loading tournament projection...</p>
+        )}
+      </section>
+
       <section className="recommendations-panel">
         <div className="recommendations-head">
           <div>
@@ -335,10 +458,23 @@ function App() {
           {recSummary && (
             <div className="rec-stats">
               <span>{recSummary.singleCount} singles</span>
-              <span>{recSummary.parlayCount} parlays</span>
+              <span>{recSummary.gameParlayCount} game parlays</span>
+              <span>{recSummary.dayParlayCount} day parlays</span>
               <span>{recSummary.bestEdge} best edge</span>
             </div>
           )}
+          <div className="mode-toggle" role="group" aria-label="Parlay mode">
+            {(['simple', 'model', 'aggressive'] as const).map((mode) => (
+              <button
+                className={parlayMode === mode ? 'active' : ''}
+                key={mode}
+                type="button"
+                onClick={() => setParlayMode(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
         </div>
         {recommendations ? (
           <>
@@ -368,17 +504,18 @@ function App() {
               </section>
 
               <section className="panel-block rec-list">
-                <h3>Parlay candidates</h3>
-                {recommendations.parlay_candidates.length === 0 ? (
-                  <p className="muted">Need 2+ positive-edge games from different fixtures.</p>
+                <h3>Best parlay by day</h3>
+                {dayParlays.length === 0 ? (
+                  <p className="muted">Need 2+ usable games on a day for this mode.</p>
                 ) : (
-                  recommendations.parlay_candidates.map((candidate, index) => (
-                    <div className="parlay-card" key={index}>
-                      <strong>{formatPercent(candidate.combined_probability)} combined probability</strong>
+                  dayParlays.map((candidate) => (
+                    <div className={`parlay-card ${candidate.risk_level}`} key={`${candidate.mode}-${candidate.date}`}>
+                      <strong>{candidate.date} / {formatPercent(candidate.combined_probability)} probability</strong>
                       <span>{candidate.decimal_odds.toFixed(2)} decimal odds</span>
                       <span>${candidate.expected_value_per_10.toFixed(2)} EV per $10</span>
-                      {candidate.legs.map((leg) => (
-                        <small key={`${leg.fixture_id}-${leg.selection}`}>{leg.selection} / {leg.match}</small>
+                      <small>{candidate.risk_level} risk / {candidate.reason}</small>
+                      {candidate.legs.map((leg, index) => (
+                        <small key={`${candidate.date}-${index}`}>{recommendedLegLabel(leg)}</small>
                       ))}
                     </div>
                   ))
