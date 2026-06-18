@@ -90,6 +90,31 @@ class SyncService:
         self.odds_source = "none"
         self.current_result_team_profiles = len(self.repository.list_team_stats())
         self.next_sync_at: datetime | None = None
+        self._load_persisted_status()
+
+    def _load_persisted_status(self) -> None:
+        saved = self.repository.get_sync_status()
+        if not saved:
+            return
+        self.last_sync_at = self._parse_status_time(saved.get("last_sync_at"))
+        self.last_success_at = self._parse_status_time(saved.get("last_success_at"))
+        self.last_error = saved.get("last_error")
+        self.fixture_source = saved.get("fixture_source") or self.fixture_source
+        self.odds_source = saved.get("odds_source") or self.odds_source
+        self.current_result_team_profiles = int(saved.get("current_result_team_profiles") or self.current_result_team_profiles)
+        self.next_sync_at = self._parse_status_time(saved.get("next_sync_at"))
+
+    @staticmethod
+    def _parse_status_time(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _persist_status(self) -> None:
+        self.repository.save_sync_status(self.status())
 
     def should_poll(self) -> bool:
         now = self.now().astimezone(timezone.utc)
@@ -114,7 +139,9 @@ class SyncService:
         now = self.now().astimezone(timezone.utc)
         self.next_sync_at = now + timedelta(seconds=self.config.interval_seconds)
         if not force and not self.should_poll():
-            return {**self.status(), "status": "skipped", "changed_fixture_ids": []}
+            result = {**self.status(), "status": "skipped", "changed_fixture_ids": []}
+            self.repository.save_sync_status(result)
+            return result
         if self.running:
             return {**self.status(), "status": "already-running", "changed_fixture_ids": []}
 
@@ -140,7 +167,7 @@ class SyncService:
             self.last_success_at = now
             self.last_error = None
             self.running = False
-            return {
+            result = {
                 **self.status(),
                 "status": "synced",
                 "fixtures": len(self.repository.list_fixtures()),
@@ -151,8 +178,12 @@ class SyncService:
                 "changed_fixture_ids": changed_fixture_ids,
                 "message": "Real data synced and cached. Missing odds are shown as no recommendation.",
             }
+            self.repository.save_sync_status(result)
+            return result
         except Exception as exc:
             self.last_error = str(exc)
+            self.running = False
+            self._persist_status()
             raise
         finally:
             self.running = False

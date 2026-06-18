@@ -38,6 +38,78 @@ npm run dev
 ```
 
 The frontend expects the backend at `http://127.0.0.1:8000`.
+In production, the built frontend uses same-origin API requests so Vercel can serve both the UI and FastAPI app from one deployment.
+
+## Vercel Hosting with Auto Updates
+
+This repo is configured for full-stack Vercel hosting:
+
+- FastAPI runs as a Vercel Python Function from `app/main.py`.
+- `npm --prefix frontend ci && npm --prefix frontend run build` builds the Vite app.
+- FastAPI serves `frontend/dist` when it exists.
+- Turso/libSQL stores production data so Vercel cold starts keep synced fixtures, odds, status, and model artifacts.
+- GitHub Actions calls protected cron endpoints every 5 minutes for data sync and daily for model retraining.
+
+### 1. Create Turso database
+
+Create a free Turso database and token, then set these in Vercel Production environment variables:
+
+```powershell
+TURSO_DATABASE_URL="libsql://..."
+TURSO_AUTH_TOKEN="..."
+```
+
+Local dev can keep using `DATABASE_URL=data/fifa_ml.sqlite3`; Turso is only used when both Turso variables exist.
+
+### 2. Set Vercel environment variables
+
+Set these in Vercel project settings:
+
+```powershell
+TURSO_DATABASE_URL="libsql://..."
+TURSO_AUTH_TOKEN="..."
+CRON_SECRET="generate-a-long-random-secret"
+FOOTBALL_DATA_TOKEN="your-football-data-token"
+THE_ODDS_API_KEY="your-odds-api-key"
+API_FOOTBALL_KEY="optional-api-football-key"
+ODDS_REGIONS="us"
+ODDS_MARKETS="h2h,spreads,totals"
+AUTO_SYNC_ENABLED="false"
+```
+
+`AUTO_SYNC_ENABLED=false` is recommended on Vercel because scheduled GitHub Actions invoke sync endpoints instead of relying on an in-process background loop.
+
+### 3. Set GitHub repository secrets
+
+Add these GitHub Actions secrets for `vihaana28/FIFA-ML`:
+
+```powershell
+PROD_URL="https://your-vercel-domain.vercel.app"
+CRON_SECRET="same-value-as-vercel"
+```
+
+Workflows:
+
+- `.github/workflows/production-sync.yml`: runs every 5 minutes and calls `POST /admin/cron/sync`.
+- `.github/workflows/production-train.yml`: runs daily and calls `POST /admin/cron/train`.
+
+Both endpoints require `Authorization: Bearer $CRON_SECRET`.
+
+### 4. Deploy
+
+Connect the GitHub repo to Vercel or run:
+
+```powershell
+vercel
+vercel --prod
+```
+
+After deploy:
+
+```powershell
+curl https://your-vercel-domain.vercel.app/health
+curl -X POST https://your-vercel-domain.vercel.app/admin/cron/sync -H "Authorization: Bearer $env:CRON_SECRET"
+```
 
 ## Data
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm --prefix frontend ci && npm --prefix frontend run build",
+  "functions": {
+    "app/main.py": {
+      "excludeFiles": "{tests/**,frontend/node_modules/**,frontend/src/**,frontend/*.tsbuildinfo,pytest-cache-files-*/**,data/*.sqlite3,data/model/**,.venv/**,__pycache__/**,.pytest_cache/**}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/app/main.py"
+    }
+  ]
+}

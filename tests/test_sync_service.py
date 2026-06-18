@@ -80,6 +80,25 @@ def test_sync_service_marks_stale_status_when_provider_fails():
     assert status["running"] is False
 
 
+def test_sync_service_persists_not_running_after_provider_failure(tmp_path):
+    repository = Repository(str(tmp_path / "sync.sqlite3"))
+    repository.replace_fixtures([_fixture()])
+    client = FakeFootballDataClient(error=RuntimeError("quota exceeded"))
+    service = SyncService(
+        repository=repository,
+        football_data_client=client,
+        now=lambda: datetime(2026, 6, 13, 21, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(RuntimeError):
+        service.sync(force=False)
+
+    persisted = Repository(str(tmp_path / "sync.sqlite3")).get_sync_status()
+    assert persisted["last_error"] == "quota exceeded"
+    assert persisted["running"] is False
+    assert persisted["stale"] is True
+
+
 def test_sync_service_skips_provider_outside_live_window_without_force():
     repository = Repository(":memory:")
     repository.replace_fixtures([_fixture(kickoff="2026-07-01T19:00:00Z")])

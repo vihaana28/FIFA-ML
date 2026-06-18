@@ -150,7 +150,22 @@ export type TournamentProjection = {
   notes: string[]
 }
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
+type ApiEnv = {
+  VITE_API_URL?: string
+  DEV?: boolean
+}
+
+export function resolveApiUrl(env: ApiEnv): string {
+  if (env.VITE_API_URL) {
+    return env.VITE_API_URL
+  }
+  return env.DEV ? 'http://127.0.0.1:8000' : ''
+}
+
+const API_URL = resolveApiUrl({
+  VITE_API_URL: import.meta.env.VITE_API_URL,
+  DEV: String(import.meta.env.DEV) === 'true' || import.meta.env.MODE === 'development',
+})
 export const DASHBOARD_POLL_INTERVAL_MS = 60_000
 
 export async function apiGet<T>(path: string): Promise<T> {

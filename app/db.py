@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from app.data import TEAM_PRIORS
 from app.learned_model import TrainingMatch
@@ -31,10 +33,22 @@ TEAM_NAME_ALIASES = {
 
 class Repository:
     def __init__(self, database_url: str = "data/fifa_ml.sqlite3"):
-        if database_url != ":memory:":
-            Path(database_url).parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(database_url, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
+        turso_url = os.getenv("TURSO_DATABASE_URL")
+        turso_token = os.getenv("TURSO_AUTH_TOKEN")
+        if turso_url and turso_token:
+            import libsql
+
+            self.connection = libsql.connect(database=turso_url, auth_token=turso_token)
+            self.storage_backend = "turso"
+        else:
+            if database_url != ":memory:":
+                Path(database_url).parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(database_url, check_same_thread=False)
+            self.storage_backend = "sqlite"
+        try:
+            self.connection.row_factory = sqlite3.Row
+        except AttributeError:
+            pass
         self.init_schema()
         self.seed()
         self.refresh_fixture_team_features()
@@ -127,6 +141,19 @@ class Repository:
                 payload TEXT NOT NULL,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS sync_status (
+                key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS model_artifacts (
+                name TEXT PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                payload_text TEXT,
+                payload_blob BLOB,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         self._migrate_columns()
@@ -165,6 +192,23 @@ class Repository:
             fixtures = OpenFootballClient().world_cup_fixtures()
         except Exception:
             fixtures = []
+        if not fixtures:
+            fixtures = [
+                {
+                    "id": "seed-2026-06-11-mexico-south-africa",
+                    "provider": "seed",
+                    "provider_fixture_id": "seed-2026-06-11-mexico-south-africa",
+                    "home_team_id": "mexico",
+                    "away_team_id": "south-africa",
+                    "home_team": "Mexico",
+                    "away_team": "South Africa",
+                    "kickoff": "2026-06-11T19:00:00Z",
+                    "venue": "Estadio Azteca, Mexico City",
+                    "stage": "Group stage",
+                    "status": "SCHEDULED",
+                    "score": {"home": None, "away": None, "winner": None},
+                }
+            ]
         if fixtures:
             self.replace_fixtures(fixtures)
 
@@ -587,3 +631,60 @@ class Repository:
     def save_recommendations(self, payload: dict) -> None:
         self.connection.execute("INSERT INTO recommendation_records (payload) VALUES (?)", (json.dumps(payload),))
         self.connection.commit()
+
+    def save_sync_status(self, payload: dict[str, Any]) -> None:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO sync_status (key, payload, updated_at)
+            VALUES ('default', ?, CURRENT_TIMESTAMP)
+            """,
+            (json.dumps(payload),),
+        )
+        self.connection.commit()
+
+    def get_sync_status(self) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT payload FROM sync_status WHERE key = 'default'").fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def save_model_artifact(
+        self,
+        name: str,
+        payload: dict[str, Any] | bytes,
+        content_type: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        payload_text = None
+        payload_blob = None
+        if isinstance(payload, bytes):
+            payload_blob = payload
+        else:
+            payload_text = json.dumps(payload)
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO model_artifacts
+            (name, content_type, payload_text, payload_blob, metadata, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (name, content_type, payload_text, payload_blob, json.dumps(metadata or {})),
+        )
+        self.connection.commit()
+
+    def get_model_artifact(self, name: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT name, content_type, payload_text, payload_blob, metadata, updated_at FROM model_artifacts WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if not row:
+            return None
+        payload = row["payload_blob"]
+        if payload is not None:
+            payload = bytes(payload)
+        elif row["payload_text"]:
+            payload = json.loads(row["payload_text"])
+        return {
+            "name": row["name"],
+            "content_type": row["content_type"],
+            "payload": payload,
+            "metadata": json.loads(row["metadata"] or "{}"),
+            "updated_at": row["updated_at"],
+        }

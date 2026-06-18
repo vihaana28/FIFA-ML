@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Query
+from typing import Any
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -13,7 +17,7 @@ from app.betting import expected_value, implied_probability, kelly_fraction, par
 from app.calibration import calibration_payload
 from app.data import DATA_SOURCES
 from app.db import Repository
-from app.learned_model import DEFAULT_LEARNED_MODEL_PATH, load_learned_goal_model
+from app.learned_model import DEFAULT_LEARNED_MODEL_PATH, load_learned_goal_model, load_learned_goal_model_bytes
 from app.model import MODEL_VERSION, predict_match
 from app.providers import ApiFootballClient, FootballDataClient, OpenFootballClient, TheOddsApiClient
 from app.recommendations import moneyline_market, recommend_bets
@@ -43,16 +47,17 @@ class StatProfileIngestRequest(BaseModel):
 
 
 def create_app(
-    database_url: str = "data/fifa_ml.sqlite3",
+    database_url: str | None = None,
     model_artifact_path: str | Path = DEFAULT_MODEL_ARTIFACT_PATH,
     backtest_artifact_path: str | Path | None = None,
 ) -> FastAPI:
     load_env_file()
+    database_url = database_url or os.environ.get("DATABASE_URL", "data/fifa_ml.sqlite3")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task: asyncio.Task | None = None
-        if app.state.sync_service.config.enabled:
+        if app.state.sync_service.config.enabled and not os.environ.get("VERCEL"):
             task = asyncio.create_task(run_auto_sync_loop(app.state.sync_service))
         try:
             yield
@@ -73,7 +78,7 @@ def create_app(
     app.state.statsbomb = StatsBombOpenDataClient()
     app.state.model_artifact_path = Path(model_artifact_path)
     app.state.learned_model_path = app.state.model_artifact_path.parent / DEFAULT_LEARNED_MODEL_PATH.name
-    app.state.learned_model = load_learned_goal_model(app.state.learned_model_path)
+    app.state.learned_model = _load_learned_model(app.state.repository, app.state.learned_model_path)
     app.state.backtest_artifact_path = Path(backtest_artifact_path) if backtest_artifact_path else app.state.model_artifact_path.parent / "backtest.json"
     app.state.sync_service = SyncService(
         repository=app.state.repository,
@@ -93,6 +98,13 @@ def create_app(
 
     def get_repository() -> Repository:
         return app.state.repository
+
+    def require_cron_auth(authorization: str | None = Header(default=None)) -> None:
+        secret = os.environ.get("CRON_SECRET")
+        if not secret:
+            raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+        if authorization != f"Bearer {secret}":
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -236,6 +248,10 @@ def create_app(
     @app.get("/model/metrics")
     def metrics() -> dict:
         backtest = read_backtest_metrics(app.state.backtest_artifact_path)
+        if not backtest or backtest.get("sample_matches") == 0:
+            persisted = _read_persisted_json_artifact(app.state.repository, "backtest.json")
+            if persisted:
+                backtest = persisted
         return {
             "model_type": MODEL_VERSION,
             "training_status": "Run POST /admin/train or python scripts/backtest_model.py after adding historical datasets to data/raw.",
@@ -252,7 +268,10 @@ def create_app(
     def model_artifact(repository: Repository = Depends(get_repository)) -> dict:
         artifact = read_model_artifact(app.state.model_artifact_path)
         if not artifact:
+            artifact = _read_persisted_json_artifact(repository, "model.json")
+        if not artifact:
             artifact = write_model_artifact(repository, app.state.model_artifact_path)
+            repository.save_model_artifact("model.json", artifact, content_type="application/json")
         return {
             "model_type": artifact.get("model_type"),
             "generated_at": artifact.get("generated_at"),
@@ -321,11 +340,44 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Sync failed: {exc}") from exc
 
+    @app.post("/admin/cron/sync", dependencies=[Depends(require_cron_auth)])
+    def cron_sync(repository: Repository = Depends(get_repository)) -> dict:
+        try:
+            result = app.state.sync_service.sync(force=True, include_odds=True)
+            repository.save_sync_status(result)
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Sync failed: {exc}") from exc
+
+    @app.post("/admin/cron/train", dependencies=[Depends(require_cron_auth)])
+    def cron_train(repository: Repository = Depends(get_repository)) -> dict:
+        try:
+            sync_result = app.state.sync_service.sync(force=True, include_odds=True)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                model_path = Path(temp_dir) / "model.json"
+                backtest_path = Path(temp_dir) / "backtest.json"
+                artifact, backtest = _write_and_persist_model_artifacts(repository, model_path, backtest_path)
+            app.state.learned_model = _load_learned_model(repository, app.state.learned_model_path)
+            return {
+                "status": "trained",
+                "sync": sync_result,
+                "model_type": artifact["model_type"],
+                "team_count": artifact["team_count"],
+                "learned_model": artifact.get("learned_model", {}),
+                "backtest": backtest,
+                "message": "Model artifacts persisted for serverless runtime.",
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Training failed: {exc}") from exc
+
     @app.post("/admin/train")
     def train(repository: Repository = Depends(get_repository)) -> dict:
-        artifact = write_model_artifact(repository, app.state.model_artifact_path)
-        app.state.learned_model = load_learned_goal_model(app.state.learned_model_path)
-        backtest = write_backtest_metrics(repository, app.state.backtest_artifact_path)
+        artifact, backtest = _write_and_persist_model_artifacts(
+            repository,
+            app.state.model_artifact_path,
+            app.state.backtest_artifact_path,
+        )
+        app.state.learned_model = _load_learned_model(repository, app.state.learned_model_path)
         return {
             "status": "trained",
             "model_type": artifact["model_type"],
@@ -343,6 +395,44 @@ def create_app(
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return app
+
+
+def _load_learned_model(repository: Repository, path: str | Path):
+    saved = repository.get_model_artifact(DEFAULT_LEARNED_MODEL_PATH.name)
+    if saved and isinstance(saved.get("payload"), bytes):
+        loaded = load_learned_goal_model_bytes(saved["payload"])
+        if loaded:
+            return loaded
+    return load_learned_goal_model(path)
+
+
+def _read_persisted_json_artifact(repository: Repository, name: str) -> dict[str, Any]:
+    saved = repository.get_model_artifact(name)
+    if saved and isinstance(saved.get("payload"), dict):
+        return saved["payload"]
+    return {}
+
+
+def _write_and_persist_model_artifacts(
+    repository: Repository,
+    model_artifact_path: str | Path,
+    backtest_artifact_path: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    artifact = write_model_artifact(repository, model_artifact_path)
+    repository.save_model_artifact("model.json", artifact, content_type="application/json")
+
+    learned_path = Path(model_artifact_path).parent / DEFAULT_LEARNED_MODEL_PATH.name
+    if learned_path.exists():
+        repository.save_model_artifact(
+            DEFAULT_LEARNED_MODEL_PATH.name,
+            learned_path.read_bytes(),
+            content_type="application/octet-stream",
+            metadata=artifact.get("learned_model", {}),
+        )
+
+    backtest = write_backtest_metrics(repository, backtest_artifact_path)
+    repository.save_model_artifact("backtest.json", backtest, content_type="application/json")
+    return artifact, backtest
 
 
 app = create_app()

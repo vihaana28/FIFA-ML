@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from io import BytesIO
 from math import log
 from pathlib import Path
 from typing import Any, Iterable
@@ -465,6 +466,20 @@ def load_learned_goal_model(path: str | Path = DEFAULT_LEARNED_MODEL_PATH) -> Le
         payload = load(artifact_path)
     except Exception:
         return None
+    return learned_goal_model_from_payload(payload)
+
+
+def load_learned_goal_model_bytes(payload_bytes: bytes) -> LearnedGoalModel | None:
+    try:
+        from joblib import load
+
+        payload = load(BytesIO(payload_bytes))
+    except Exception:
+        return None
+    return learned_goal_model_from_payload(payload)
+
+
+def learned_goal_model_from_payload(payload: dict[str, Any]) -> LearnedGoalModel | None:
     if payload.get("model_type") != LEARNED_MODEL_VERSION:
         return None
     return LearnedGoalModel(
