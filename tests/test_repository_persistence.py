@@ -7,6 +7,29 @@ from types import SimpleNamespace
 from app.db import Repository
 
 
+class TupleRowConnection:
+    __slots__ = ("connection",)
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def execute(self, *args, **kwargs):
+        return self.connection.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        return self.connection.executemany(*args, **kwargs)
+
+    def executescript(self, *args, **kwargs):
+        return self.connection.executescript(*args, **kwargs)
+
+    def commit(self):
+        return self.connection.commit()
+
+    @property
+    def total_changes(self):
+        return self.connection.total_changes
+
+
 def test_repository_uses_local_sqlite_without_turso_env(monkeypatch, tmp_path):
     monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
     monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
@@ -34,6 +57,26 @@ def test_repository_uses_turso_when_credentials_exist(monkeypatch):
 
     assert repository.storage_backend == "turso"
     assert calls == [{"database": "libsql://fifa-db.turso.io", "auth_token": "test-token"}]
+
+
+def test_repository_handles_turso_tuple_rows(monkeypatch):
+    def connect(*, database: str, auth_token: str):
+        return TupleRowConnection(sqlite3.connect(":memory:"))
+
+    monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://fifa-db.turso.io")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "test-token")
+    monkeypatch.setitem(sys.modules, "libsql", SimpleNamespace(connect=connect))
+
+    repository = Repository()
+    fixture = repository.list_fixtures()[0]
+    repository.save_sync_status({"fixture_source": "football-data.org"})
+    repository.save_model_artifact("model.json", {"team_count": 48}, content_type="application/json")
+
+    assert repository.storage_backend == "turso"
+    assert repository.get_fixture(fixture["id"])["id"] == fixture["id"]
+    assert repository.get_team_features(fixture["home_team_id"]).team_id == fixture["home_team_id"]
+    assert repository.get_sync_status()["fixture_source"] == "football-data.org"
+    assert repository.get_model_artifact("model.json")["payload"] == {"team_count": 48}
 
 
 def test_sync_status_persists_across_repository_instances(tmp_path):

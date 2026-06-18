@@ -54,7 +54,7 @@ class Repository:
         self.refresh_fixture_team_features()
 
     def init_schema(self) -> None:
-        self.connection.executescript(
+        self._run_script(
             """
             CREATE TABLE IF NOT EXISTS teams (
                 id TEXT PRIMARY KEY,
@@ -159,9 +159,41 @@ class Repository:
         self._migrate_columns()
         self.connection.commit()
 
+    def _run_script(self, script: str) -> None:
+        if hasattr(self.connection, "executescript"):
+            self.connection.executescript(script)
+            return
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement:
+                self.connection.execute(statement)
+
+    @staticmethod
+    def _row_to_dict(row: Any, description: Any = None) -> dict[str, Any]:
+        if isinstance(row, dict):
+            return dict(row)
+        try:
+            return dict(row)
+        except (TypeError, ValueError):
+            pass
+        if description:
+            return {column[0]: row[index] for index, column in enumerate(description)}
+        raise TypeError("Database row cannot be converted to a mapping")
+
+    def _fetchone(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        cursor = self.connection.execute(sql, params)
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row, getattr(cursor, "description", None))
+
+    def _fetchall(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        cursor = self.connection.execute(sql, params)
+        return [self._row_to_dict(row, getattr(cursor, "description", None)) for row in cursor.fetchall()]
+
     def _migrate_columns(self) -> None:
         columns = {
-            table: {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+            table: {row["name"] for row in self._fetchall(f"PRAGMA table_info({table})")}
             for table in ("teams", "fixtures", "odds_snapshots")
         }
         if "provider" not in columns["teams"]:
@@ -227,18 +259,18 @@ class Repository:
         return TeamFeatures(team_id=team_id, team_name=team_name, **prior)
 
     def refresh_fixture_team_features(self) -> None:
-        rows = self.connection.execute(
+        rows = self._fetchall(
             """
             SELECT home_team_id AS team_id, home_team AS team_name FROM fixtures
             UNION
             SELECT away_team_id AS team_id, away_team AS team_name FROM fixtures
             """
-        ).fetchall()
+        )
         for row in rows:
-            stat_profile_row = self.connection.execute(
+            stat_profile_row = self._fetchone(
                 "SELECT payload FROM team_stat_profiles WHERE team_id = ?",
                 (row["team_id"],),
-            ).fetchone()
+            )
             if stat_profile_row:
                 features = self._feature_from_stat_profile(json.loads(stat_profile_row["payload"]))
             else:
@@ -247,10 +279,10 @@ class Repository:
                 "INSERT OR REPLACE INTO team_features (team_id, payload) VALUES (?, ?)",
                 (row["team_id"], json.dumps(asdict(features))),
             )
-            existing_player = self.connection.execute(
+            existing_player = self._fetchone(
                 "SELECT payload FROM player_features WHERE team_id = ?",
                 (row["team_id"],),
-            ).fetchone()
+            )
             if not existing_player:
                 self.connection.execute(
                     "INSERT OR REPLACE INTO player_features (team_id, payload) VALUES (?, ?)",
@@ -407,15 +439,15 @@ class Repository:
         self.connection.commit()
 
     def list_fixtures(self) -> list[dict]:
-        rows = self.connection.execute("SELECT * FROM fixtures ORDER BY kickoff").fetchall()
+        rows = self._fetchall("SELECT * FROM fixtures ORDER BY kickoff")
         return [self._fixture_from_row(row) for row in rows]
 
     def get_fixture(self, fixture_id: str) -> dict | None:
-        row = self.connection.execute("SELECT * FROM fixtures WHERE id = ?", (fixture_id,)).fetchone()
+        row = self._fetchone("SELECT * FROM fixtures WHERE id = ?", (fixture_id,))
         return self._fixture_from_row(row) if row else None
 
     @staticmethod
-    def _fixture_from_row(row: sqlite3.Row) -> dict:
+    def _fixture_from_row(row: dict[str, Any]) -> dict:
         item = dict(row)
         if item.get("score_payload"):
             item["score"] = json.loads(item["score_payload"])
@@ -423,13 +455,13 @@ class Repository:
         return item
 
     def get_team_features(self, team_id: str) -> TeamFeatures:
-        row = self.connection.execute("SELECT payload FROM team_features WHERE team_id = ?", (team_id,)).fetchone()
+        row = self._fetchone("SELECT payload FROM team_features WHERE team_id = ?", (team_id,))
         if not row:
             raise KeyError(f"No features for team {team_id}")
         return TeamFeatures(**json.loads(row["payload"]))
 
     def get_player_features(self, team_id: str) -> dict:
-        row = self.connection.execute("SELECT payload FROM player_features WHERE team_id = ?", (team_id,)).fetchone()
+        row = self._fetchone("SELECT payload FROM player_features WHERE team_id = ?", (team_id,))
         return json.loads(row["payload"]) if row else {"team_id": team_id, "sample_size": 0}
 
     def save_stat_profiles(self, team_profiles: list[dict], player_profiles: list[dict]) -> None:
@@ -500,11 +532,11 @@ class Repository:
         }
 
     def list_team_stats(self) -> list[dict]:
-        rows = self.connection.execute("SELECT payload FROM team_stat_profiles ORDER BY team_name").fetchall()
+        rows = self._fetchall("SELECT payload FROM team_stat_profiles ORDER BY team_name")
         return [json.loads(row["payload"]) for row in rows]
 
     def get_team_stats(self, team_id: str) -> dict | None:
-        row = self.connection.execute("SELECT payload FROM team_stat_profiles WHERE team_id = ?", (team_id,)).fetchone()
+        row = self._fetchone("SELECT payload FROM team_stat_profiles WHERE team_id = ?", (team_id,))
         return json.loads(row["payload"]) if row else None
 
     def save_training_matches(self, matches: list[TrainingMatch]) -> int:
@@ -532,13 +564,13 @@ class Repository:
         return len(matches)
 
     def list_training_matches(self) -> list[TrainingMatch]:
-        rows = self.connection.execute(
+        rows = self._fetchall(
             """
             SELECT source, match_date, home_team, away_team, home_score, away_score, tournament, neutral
             FROM model_training_matches
             ORDER BY match_date, home_team, away_team
             """
-        ).fetchall()
+        )
         return [
             TrainingMatch(
                 source=row["source"],
@@ -554,32 +586,32 @@ class Repository:
         ]
 
     def get_saved_prediction(self, fixture_id: str) -> dict | None:
-        row = self.connection.execute("SELECT payload FROM predictions WHERE fixture_id = ?", (fixture_id,)).fetchone()
+        row = self._fetchone("SELECT payload FROM predictions WHERE fixture_id = ?", (fixture_id,))
         return json.loads(row["payload"]) if row else None
 
     def delete_predictions(self, fixture_ids: list[str]) -> int:
         if not fixture_ids:
             return 0
         self.connection.executemany("DELETE FROM predictions WHERE fixture_id = ?", [(fixture_id,) for fixture_id in fixture_ids])
-        deleted = self.connection.total_changes
+        deleted = getattr(self.connection, "total_changes", 0)
         self.connection.commit()
         return deleted
 
     def list_player_stats(self, team_id: str | None = None, limit: int = 100) -> list[dict]:
         if team_id:
-            rows = self.connection.execute(
+            rows = self._fetchall(
                 "SELECT payload FROM player_stat_profiles WHERE team_id = ? ORDER BY player_name LIMIT ?",
                 (team_id, limit),
-            ).fetchall()
+            )
         else:
-            rows = self.connection.execute(
+            rows = self._fetchall(
                 "SELECT payload FROM player_stat_profiles ORDER BY player_name LIMIT ?",
                 (limit,),
-            ).fetchall()
+            )
         return [json.loads(row["payload"]) for row in rows]
 
     def get_odds(self, fixture_id: str) -> dict:
-        row = self.connection.execute("SELECT payload FROM odds_snapshots WHERE fixture_id = ?", (fixture_id,)).fetchone()
+        row = self._fetchone("SELECT payload FROM odds_snapshots WHERE fixture_id = ?", (fixture_id,))
         return json.loads(row["payload"]) if row else {}
 
     def save_odds(self, fixture_id: str, payload: dict) -> None:
@@ -643,7 +675,7 @@ class Repository:
         self.connection.commit()
 
     def get_sync_status(self) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT payload FROM sync_status WHERE key = 'default'").fetchone()
+        row = self._fetchone("SELECT payload FROM sync_status WHERE key = 'default'")
         return json.loads(row["payload"]) if row else None
 
     def save_model_artifact(
@@ -670,10 +702,10 @@ class Repository:
         self.connection.commit()
 
     def get_model_artifact(self, name: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
+        row = self._fetchone(
             "SELECT name, content_type, payload_text, payload_blob, metadata, updated_at FROM model_artifacts WHERE name = ?",
             (name,),
-        ).fetchone()
+        )
         if not row:
             return None
         payload = row["payload_blob"]
