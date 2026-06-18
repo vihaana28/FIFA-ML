@@ -105,10 +105,46 @@ def test_cron_sync_runs_force_sync_and_persists_status(monkeypatch):
     assert client.app.state.repository.get_sync_status()["fixture_source"] == "football-data.org"
 
 
+def test_cron_training_data_requires_bearer_secret(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "test-secret")
+    client = TestClient(create_app(database_url=":memory:"))
+
+    missing = client.post("/admin/cron/training-data")
+    wrong = client.post("/admin/cron/training-data", headers={"Authorization": "Bearer wrong"})
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+
+
+def test_cron_training_data_loads_historical_matches(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "test-secret")
+    client = TestClient(create_app(database_url=":memory:"))
+
+    def fake_sync_historical_training_data(repository):
+        from app.learned_model import TrainingMatch
+        from datetime import date
+
+        matches = [
+            TrainingMatch(date(2022, 11, 20), "Qatar", "Ecuador", 0, 2, "FIFA World Cup", True, "martj42/international_results"),
+            TrainingMatch(date(2022, 11, 21), "England", "Iran", 6, 2, "FIFA World Cup", True, "martj42/international_results"),
+        ]
+        saved = repository.save_training_matches(matches)
+        return {"status": "training-data-synced", "source": "test", "rows": 2, "matches": 2, "saved": saved}
+
+    monkeypatch.setattr("app.main.sync_historical_training_data", fake_sync_historical_training_data, raising=False)
+
+    response = client.post("/admin/cron/training-data", headers={"Authorization": "Bearer test-secret"})
+
+    assert response.status_code == 200
+    assert response.json()["saved"] == 2
+    assert len(client.app.state.repository.list_training_matches()) == 2
+
+
 def test_cron_train_runs_sync_and_persists_artifacts(monkeypatch, tmp_path):
     monkeypatch.setenv("CRON_SECRET", "test-secret")
     model_path = tmp_path / "model.json"
     client = TestClient(create_app(database_url=":memory:", model_artifact_path=model_path))
+    training_data_calls = []
 
     class FakeSyncService:
         def sync(self, force: bool = False, include_odds: bool = False) -> dict:
@@ -129,9 +165,17 @@ def test_cron_train_runs_sync_and_persists_artifacts(monkeypatch, tmp_path):
 
     client.app.state.sync_service = FakeSyncService()
 
+    def fake_sync_historical_training_data(repository):
+        training_data_calls.append(True)
+        return {"status": "training-data-synced", "source": "test", "rows": 0, "matches": 0, "saved": 0}
+
+    monkeypatch.setattr("app.main.sync_historical_training_data", fake_sync_historical_training_data, raising=False)
+
     response = client.post("/admin/cron/train", headers={"Authorization": "Bearer test-secret"})
 
     assert response.status_code == 200
     assert response.json()["status"] == "trained"
+    assert response.json()["training_data"]["status"] == "training-data-synced"
+    assert training_data_calls == [True]
     assert client.app.state.repository.get_model_artifact("model.json")["payload"]["team_count"] >= 1
     assert client.app.state.repository.get_model_artifact("backtest.json")["payload"]["sample_matches"] >= 0

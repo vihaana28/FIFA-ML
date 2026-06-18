@@ -24,6 +24,7 @@ from app.recommendations import moneyline_market, recommend_bets
 from app.settings import load_env_file
 from app.stats_sources import StatsBombOpenDataClient
 from app.sync_service import SyncService, run_auto_sync_loop
+from app.training_data import sync_historical_training_data
 from app.training import DEFAULT_MODEL_ARTIFACT_PATH, read_model_artifact, write_model_artifact
 from app.tournament_projection import build_tournament_projection
 
@@ -349,10 +350,18 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Sync failed: {exc}") from exc
 
+    @app.post("/admin/cron/training-data", dependencies=[Depends(require_cron_auth)])
+    def cron_training_data(repository: Repository = Depends(get_repository)) -> dict:
+        try:
+            return sync_historical_training_data(repository)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Training data sync failed: {exc}") from exc
+
     @app.post("/admin/cron/train", dependencies=[Depends(require_cron_auth)])
     def cron_train(repository: Repository = Depends(get_repository)) -> dict:
         try:
             sync_result = app.state.sync_service.sync(force=True, include_odds=True)
+            training_data_result = sync_historical_training_data(repository)
             with tempfile.TemporaryDirectory() as temp_dir:
                 model_path = Path(temp_dir) / "model.json"
                 backtest_path = Path(temp_dir) / "backtest.json"
@@ -361,6 +370,7 @@ def create_app(
             return {
                 "status": "trained",
                 "sync": sync_result,
+                "training_data": training_data_result,
                 "model_type": artifact["model_type"],
                 "team_count": artifact["team_count"],
                 "learned_model": artifact.get("learned_model", {}),

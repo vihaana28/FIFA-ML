@@ -91,9 +91,15 @@ CRON_SECRET="same-value-as-vercel"
 Workflows:
 
 - `.github/workflows/production-sync.yml`: runs every 5 minutes and calls `POST /admin/cron/sync`.
-- `.github/workflows/production-train.yml`: runs daily and calls `POST /admin/cron/train`.
+- `.github/workflows/production-train.yml`: runs daily and calls `POST /admin/cron/train`, which syncs fixtures/odds, imports historical training rows, then retrains the model.
 
-Both endpoints require `Authorization: Bearer $CRON_SECRET`.
+Protected automation endpoints:
+
+- `POST /admin/cron/sync`: refreshes fixtures, scores, odds, and current result stats.
+- `POST /admin/cron/training-data`: imports historical international result rows into Turso.
+- `POST /admin/cron/train`: runs sync, imports historical training rows, retrains, and persists artifacts.
+
+All endpoints require `Authorization: Bearer $CRON_SECRET`.
 
 ### 4. Deploy
 
@@ -109,6 +115,8 @@ After deploy:
 ```powershell
 curl https://your-vercel-domain.vercel.app/health
 curl -X POST https://your-vercel-domain.vercel.app/admin/cron/sync -H "Authorization: Bearer $env:CRON_SECRET"
+curl -X POST https://your-vercel-domain.vercel.app/admin/cron/training-data -H "Authorization: Bearer $env:CRON_SECRET"
+curl -X POST https://your-vercel-domain.vercel.app/admin/cron/train -H "Authorization: Bearer $env:CRON_SECRET"
 ```
 
 ## Data
@@ -147,7 +155,7 @@ python scripts\train_model.py
 
 `scripts\sync_data.py` also refreshes current-tournament team stats from finished match scores, so played games update goals, goals against, record, and points.
 When the FastAPI app is running, auto-sync polls football-data.org around live match windows and the frontend refreshes local backend data every 60 seconds.
-`scripts\sync_training_data.py` stores match-level rows from `TRAINING_RESULTS_CSV`, `INTERNATIONAL_RESULTS_CSV`, or the free martj42 GitHub CSV by default. `scripts\sync_recent_form.py` expects a CSV with columns like `date,home_team,away_team,home_score,away_score,tournament`; the public international results datasets used on Kaggle/GitHub follow this shape. Friendlies count at lower weight than competitive matches so they can move form without overwhelming tournament data, and those same rows are saved for learned-model training.
+`scripts\sync_training_data.py` and `POST /admin/cron/training-data` store match-level rows from `TRAINING_RESULTS_CSV`, `INTERNATIONAL_RESULTS_CSV`, or the free martj42 GitHub CSV by default. On Vercel, leave `TRAINING_RESULTS_CSV` and `INTERNATIONAL_RESULTS_CSV` unset unless you provide a reachable URL; the app will use the default GitHub CSV. `scripts\sync_recent_form.py` expects a CSV with columns like `date,home_team,away_team,home_score,away_score,tournament`; the public international results datasets used on Kaggle/GitHub follow this shape. Friendlies count at lower weight than competitive matches so they can move form without overwhelming tournament data, and those same rows are saved for learned-model training.
 `scripts\sync_elo.py` expects `data/raw/world_elo.csv` columns like `team,rating`. It is meant for local snapshots from World Football Elo.
 `scripts\sync_player_availability.py` expects `data/raw/player_availability.csv` columns: `team,player,status,importance,minutes_share,attack_contribution,defense_contribution`. Supported statuses are `available`, `doubtful`, `injured`, and `suspended`.
 
