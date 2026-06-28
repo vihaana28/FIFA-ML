@@ -1,4 +1,5 @@
 export type QualificationState = 'qualified' | 'best-third' | 'out'
+export type BracketScore = { home: number | null; away: number | null; winner?: string | null }
 
 export function qualificationLabel(state: QualificationState): string {
   if (state === 'qualified') return 'Auto'
@@ -11,7 +12,7 @@ export function winnerTone(teamName: string, winner: string): 'winner' | 'challe
 }
 
 export function bracketScoreLabel(
-  score?: { home: number | null; away: number | null },
+  score?: BracketScore,
   status?: string,
 ): string {
   if (score?.home !== null && score?.home !== undefined && score?.away !== null && score?.away !== undefined) {
