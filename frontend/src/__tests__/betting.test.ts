@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatPercent, strongestEdge, parlaySummary, recommendationSummary, teamStatSummary, syncStatusSummary } from '../betting'
+import {
+  formatPercent,
+  parlaySummary,
+  recommendationSummary,
+  recommendedParlayLegDetails,
+  recommendedParlayPickLines,
+  strongestEdge,
+  syncStatusSummary,
+  teamStatSummary,
+} from '../betting'
 
 describe('betting UI helpers', () => {
   it('formats percentages for probability displays', () => {
@@ -64,6 +73,67 @@ describe('betting UI helpers', () => {
     expect(summary.gameParlayCount).toBe(1)
     expect(summary.dayParlayCount).toBe(1)
     expect(summary.avoidCount).toBe(2)
+  })
+
+  it('formats exact parlay pick details', () => {
+    expect(
+      recommendedParlayLegDetails({
+        fixture_id: 'game-1',
+        match: 'England vs Croatia',
+        selection: 'England',
+        market: 'moneyline',
+        model_probability: 0.563,
+        market_probability: 0.481,
+        edge: 0.082,
+        expected_value_per_10: 2.05,
+        american_odds: 120,
+        confidence: 'high',
+        source: 'test-book',
+      }),
+    ).toBe('England vs Croatia - England moneyline, +120, 56.3% model, 48.1% market, +8.2% edge, $2.05 EV/$10')
+  })
+
+  it('flattens nested day parlay picks into exact leg lines', () => {
+    const lines = recommendedParlayPickLines({
+      mode: 'simple',
+      date: '2026-06-17',
+      legs: [
+        {
+          mode: 'simple',
+          fixture_id: 'game-1',
+          match: 'England vs Croatia',
+          legs: [
+            {
+              fixture_id: 'game-1',
+              match: 'England vs Croatia',
+              selection: 'England',
+              market: 'moneyline',
+              model_probability: 0.563,
+              market_probability: 0.481,
+              edge: 0.082,
+              expected_value_per_10: 2.05,
+              american_odds: 120,
+              confidence: 'high',
+              source: 'test-book',
+            },
+          ],
+          combined_probability: 0.563,
+          decimal_odds: 2.2,
+          expected_value_per_10: 2.05,
+          risk_level: 'low',
+          reason: 'Positive EV moneyline pick.',
+        },
+      ],
+      combined_probability: 0.563,
+      decimal_odds: 2.2,
+      expected_value_per_10: 2.05,
+      risk_level: 'medium',
+      reason: 'Positive EV day parlay.',
+    })
+
+    expect(lines).toEqual([
+      'England vs Croatia - England moneyline, +120, 56.3% model, 48.1% market, +8.2% edge, $2.05 EV/$10',
+    ])
   })
 
   it('summarizes team stats for match detail cards', () => {

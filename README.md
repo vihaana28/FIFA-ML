@@ -74,6 +74,7 @@ THE_ODDS_API_KEY="your-odds-api-key"
 API_FOOTBALL_KEY="optional-api-football-key"
 ODDS_REGIONS="us"
 ODDS_MARKETS="h2h,spreads,totals"
+TRAINING_MATCH_LIMIT="1200"
 AUTO_SYNC_ENABLED="false"
 ```
 
@@ -155,7 +156,7 @@ python scripts\train_model.py
 
 `scripts\sync_data.py` also refreshes current-tournament team stats from finished match scores, so played games update goals, goals against, record, and points.
 When the FastAPI app is running, auto-sync polls football-data.org around live match windows and the frontend refreshes local backend data every 60 seconds.
-`scripts\sync_training_data.py` and `POST /admin/cron/training-data` store match-level rows from `TRAINING_RESULTS_CSV`, `INTERNATIONAL_RESULTS_CSV`, or the free martj42 GitHub CSV by default. On Vercel, leave `TRAINING_RESULTS_CSV` and `INTERNATIONAL_RESULTS_CSV` unset unless you provide a reachable URL; the app will use the default GitHub CSV. `scripts\sync_recent_form.py` expects a CSV with columns like `date,home_team,away_team,home_score,away_score,tournament`; the public international results datasets used on Kaggle/GitHub follow this shape. Friendlies count at lower weight than competitive matches so they can move form without overwhelming tournament data, and those same rows are saved for learned-model training.
+`scripts\sync_training_data.py` and `POST /admin/cron/training-data` store recent match-level rows from `TRAINING_RESULTS_CSV`, `INTERNATIONAL_RESULTS_CSV`, or the free martj42 GitHub CSV by default. `TRAINING_MATCH_LIMIT` defaults to `1200` so serverless retraining stays under Vercel/GitHub timeouts; raise it only if your deployment has enough runtime. On Vercel, leave `TRAINING_RESULTS_CSV` and `INTERNATIONAL_RESULTS_CSV` unset unless you provide a reachable URL; the app will use the default GitHub CSV. `scripts\sync_recent_form.py` expects a CSV with columns like `date,home_team,away_team,home_score,away_score,tournament`; the public international results datasets used on Kaggle/GitHub follow this shape. Friendlies count at lower weight than competitive matches so they can move form without overwhelming tournament data, and those same rows are saved for learned-model training.
 `scripts\sync_elo.py` expects `data/raw/world_elo.csv` columns like `team,rating`. It is meant for local snapshots from World Football Elo.
 `scripts\sync_player_availability.py` expects `data/raw/player_availability.csv` columns: `team,player,status,importance,minutes_share,attack_contribution,defense_contribution`. Supported statuses are `available`, `doubtful`, `injured`, and `suspended`.
 

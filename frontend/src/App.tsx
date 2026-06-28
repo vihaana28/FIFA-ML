@@ -1,23 +1,16 @@
 import { Activity, AlertTriangle, BarChart3, ChevronDown, ChevronRight, Plus, RefreshCcw, Target, Trophy } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { apiGet, DASHBOARD_POLL_INTERVAL_MS, type BetRecommendation, type Fixture, type FixtureDetail, type ParlayMode, type Prediction, type RecommendedParlay, type Recommendations, type SyncStatus, type TournamentProjection } from './api'
-import { formatPercent, parlaySummary, recommendationSummary, strongestEdge, syncStatusSummary, teamStatSummary, type ParlayLeg } from './betting'
+import { apiGet, DASHBOARD_POLL_INTERVAL_MS, type Fixture, type FixtureDetail, type ParlayMode, type Prediction, type Recommendations, type SyncStatus, type TournamentProjection } from './api'
+import { formatPercent, parlaySummary, recommendationSummary, recommendedParlayPickLines, strongestEdge, syncStatusSummary, teamStatSummary, type ParlayLeg } from './betting'
 import { dateGroupKey, gameTimeLabel, groupFixturesByDate, kickoffLabel } from './fixtureGroups'
-import { qualificationLabel, winnerTone } from './tournament'
+import { bracketScoreLabel, qualificationLabel, winnerTone } from './tournament'
 
 const outcomeLabels = {
   home: 'Home',
   draw: 'Draw',
   away: 'Away',
 } as const
-
-function recommendedLegLabel(leg: BetRecommendation | RecommendedParlay): string {
-  if ('selection' in leg) {
-    return `${leg.selection} / ${leg.match}`
-  }
-  return `${leg.match ?? leg.date ?? 'Game parlay'} / ${leg.reason}`
-}
 
 function App() {
   const [fixtures, setFixtures] = useState<Fixture[]>([])
@@ -292,8 +285,8 @@ function App() {
                     <span>{selectedGameParlay.decimal_odds.toFixed(2)} decimal odds</span>
                     <span>${selectedGameParlay.expected_value_per_10.toFixed(2)} EV per $10</span>
                     <small>{selectedGameParlay.risk_level} risk / {selectedGameParlay.reason}</small>
-                    {selectedGameParlay.legs.map((leg, index) => (
-                      <small key={`${selectedGameParlay.fixture_id}-${index}`}>{recommendedLegLabel(leg)}</small>
+                    {recommendedParlayPickLines(selectedGameParlay).map((line, index) => (
+                      <small className="parlay-pick-line" key={`${selectedGameParlay.fixture_id}-${index}`}>{line}</small>
                     ))}
                   </div>
                 ) : (
@@ -422,6 +415,9 @@ function App() {
                     <div className="bracket-match-list">
                       {round.matches.map((match) => (
                         <article className="bracket-match" key={`${round.round}-${match.slot}`}>
+                          {bracketScoreLabel(match.score, match.status) && (
+                            <header className="bracket-match-meta">{bracketScoreLabel(match.score, match.status)}</header>
+                          )}
                           <div className={winnerTone(match.home_team, match.winner)}>
                             <small>{match.home_seed}</small>
                             <strong>{match.home_team}</strong>
@@ -514,8 +510,8 @@ function App() {
                       <span>{candidate.decimal_odds.toFixed(2)} decimal odds</span>
                       <span>${candidate.expected_value_per_10.toFixed(2)} EV per $10</span>
                       <small>{candidate.risk_level} risk / {candidate.reason}</small>
-                      {candidate.legs.map((leg, index) => (
-                        <small key={`${candidate.date}-${index}`}>{recommendedLegLabel(leg)}</small>
+                      {recommendedParlayPickLines(candidate).map((line, index) => (
+                        <small className="parlay-pick-line" key={`${candidate.date}-${index}`}>{line}</small>
                       ))}
                     </div>
                   ))

@@ -167,3 +167,38 @@ def test_football_data_skips_unassigned_knockout_placeholders():
     }
 
     assert FootballDataClient.parse_matches(payload) == []
+
+
+def test_football_data_keeps_assigned_knockout_fixtures_with_scores():
+    payload = {
+        "matches": [
+            {
+                "id": 537410,
+                "utcDate": "2026-06-28T19:00:00Z",
+                "status": "FINISHED",
+                "stage": "LAST_32",
+                "homeTeam": {"id": 762, "name": "Argentina", "shortName": "Argentina", "tla": "ARG"},
+                "awayTeam": {"id": 773, "name": "France", "shortName": "France", "tla": "FRA"},
+                "score": {"winner": "AWAY_TEAM", "fullTime": {"home": 1, "away": 2}},
+            }
+        ]
+    }
+
+    fixtures = FootballDataClient.parse_matches(payload)
+
+    assert fixtures == [
+        {
+            "id": "football-data-537410",
+            "provider": "football-data",
+            "provider_fixture_id": "537410",
+            "home_team_id": "762",
+            "away_team_id": "773",
+            "home_team": "Argentina",
+            "away_team": "France",
+            "kickoff": "2026-06-28T19:00:00Z",
+            "venue": "",
+            "stage": "LAST_32",
+            "status": "FINISHED",
+            "score": {"home": 1, "away": 2, "winner": "AWAY_TEAM"},
+        }
+    ]

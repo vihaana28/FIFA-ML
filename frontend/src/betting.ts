@@ -1,3 +1,5 @@
+import type { BetRecommendation, RecommendedParlay } from './api'
+
 type EdgeRecord = Record<string, { edge: number; expected_value_per_10: number }>
 
 export type ParlayLeg = {
@@ -57,6 +59,44 @@ export function recommendationSummary(recommendations: RecommendationPayload): {
     avoidCount: recommendations.avoid.length,
     bestEdge: best ? formatPercent(best.edge) : '0.0%',
   }
+}
+
+function signedNumber(value: number, decimals: number, suffix = ''): string {
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(decimals)}${suffix}`
+}
+
+function americanOddsLabel(value: number): string {
+  return value > 0 ? `+${value}` : String(value)
+}
+
+function marketLabel(value: string): string {
+  return value.replaceAll('_', ' ')
+}
+
+function isBetRecommendation(value: BetRecommendation | RecommendedParlay): value is BetRecommendation {
+  return 'selection' in value
+}
+
+export function recommendedParlayLegDetails(leg: BetRecommendation): string {
+  return [
+    `${leg.match} - ${leg.selection} ${marketLabel(leg.market)}`,
+    americanOddsLabel(leg.american_odds),
+    `${formatPercent(leg.model_probability)} model`,
+    `${formatPercent(leg.market_probability)} market`,
+    `${signedNumber(leg.edge * 100, 1, '%')} edge`,
+    `$${leg.expected_value_per_10.toFixed(2)} EV/$10`,
+  ].join(', ')
+}
+
+export function recommendedParlayPickLines(parlay: RecommendedParlay): string[] {
+  return parlay.legs.flatMap((leg) => {
+    if (isBetRecommendation(leg)) {
+      return [recommendedParlayLegDetails(leg)]
+    }
+    const nested = recommendedParlayPickLines(leg)
+    return nested.length > 0 ? nested : [`${leg.match ?? leg.date ?? 'Game parlay'} - ${leg.reason}`]
+  })
 }
 
 export function teamStatSummary(stats?: {

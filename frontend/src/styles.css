@@ -340,6 +340,15 @@ h1 {
   background: #fff9e9;
 }
 
+.bracket-match-meta {
+  padding: 6px 10px;
+  border-bottom: 1px solid #1b1914;
+  color: #1b1914;
+  background: #f2d46b;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
 .bracket-match > div {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr) 48px;
@@ -464,6 +473,10 @@ h1 {
 .parlay-card small,
 .avoid-row span {
   color: #5b5547;
+}
+
+.parlay-pick-line {
+  line-height: 1.35;
 }
 
 .fixture-rail,

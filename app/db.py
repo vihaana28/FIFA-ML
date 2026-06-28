@@ -563,6 +563,10 @@ class Repository:
         self.connection.commit()
         return len(matches)
 
+    def count_training_matches(self) -> int:
+        row = self._fetchone("SELECT COUNT(*) AS count FROM model_training_matches")
+        return int(row["count"] if row else 0)
+
     def list_training_matches(self) -> list[TrainingMatch]:
         rows = self._fetchall(
             """

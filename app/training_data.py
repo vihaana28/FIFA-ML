@@ -10,10 +10,21 @@ from app.learned_model import parse_international_results_training_matches
 
 
 DEFAULT_RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+DEFAULT_TRAINING_MATCH_LIMIT = 1200
 
 
 def _training_source(source: str | None = None) -> str:
     return source or os.getenv("TRAINING_RESULTS_CSV") or os.getenv("INTERNATIONAL_RESULTS_CSV") or DEFAULT_RESULTS_URL
+
+
+def _training_match_limit() -> int:
+    value = os.getenv("TRAINING_MATCH_LIMIT")
+    if not value:
+        return DEFAULT_TRAINING_MATCH_LIMIT
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return DEFAULT_TRAINING_MATCH_LIMIT
 
 
 def load_historical_training_rows(source: str | None = None) -> tuple[str, list[dict]]:
@@ -31,8 +42,22 @@ def load_historical_training_rows(source: str | None = None) -> tuple[str, list[
 
 
 def sync_historical_training_data(repository: Repository, source: str | None = None) -> dict:
+    limit = _training_match_limit()
+    existing = repository.count_training_matches()
+    if existing >= limit:
+        return {
+            "status": "training-data-skipped",
+            "source": "existing-db",
+            "rows": 0,
+            "matches": existing,
+            "saved": 0,
+            "limit": limit,
+            "message": "Historical training data already loaded.",
+        }
     selected_source, rows = load_historical_training_rows(source)
     matches = parse_international_results_training_matches(rows)
+    if len(matches) > limit:
+        matches = matches[-limit:]
     saved = repository.save_training_matches(matches)
     return {
         "status": "training-data-synced",
@@ -40,4 +65,5 @@ def sync_historical_training_data(repository: Repository, source: str | None = N
         "rows": len(rows),
         "matches": len(matches),
         "saved": saved,
+        "limit": limit,
     }

@@ -8,6 +8,14 @@ from app.model import MODEL_VERSION, predict_match
 
 
 GROUP_RE = re.compile(r"GROUP[_\s-]*(?P<letter>[A-L])", re.IGNORECASE)
+KNOCKOUT_ROUND_ORDER = ("Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Final")
+KNOCKOUT_STAGE_PATTERNS = (
+    ("Round of 32", re.compile(r"(LAST|ROUND)[_\s-]*32|ROUND OF 32", re.IGNORECASE)),
+    ("Round of 16", re.compile(r"(LAST|ROUND)[_\s-]*16|ROUND OF 16", re.IGNORECASE)),
+    ("Quarterfinals", re.compile(r"QUARTER", re.IGNORECASE)),
+    ("Semifinals", re.compile(r"SEMI", re.IGNORECASE)),
+    ("Final", re.compile(r"\bFINAL\b", re.IGNORECASE)),
+)
 
 
 @dataclass
@@ -40,6 +48,16 @@ def _group_label(stage: str) -> str | None:
     if not match:
         return None
     return f"Group {match.group('letter').upper()}"
+
+
+def _knockout_round(stage: str) -> str | None:
+    normalized = stage or ""
+    if re.search(r"THIRD|3RD|BRONZE", normalized, re.IGNORECASE):
+        return None
+    for round_name, pattern in KNOCKOUT_STAGE_PATTERNS:
+        if pattern.search(normalized):
+            return round_name
+    return None
 
 
 def _sort_key(team: TeamStanding) -> tuple[float, float, float, str]:
@@ -118,6 +136,90 @@ def _knockout_probability(prediction: dict[str, Any]) -> tuple[str, float]:
     return "away", away / total
 
 
+def _actual_knockout_winner(fixture: dict[str, Any]) -> str | None:
+    if fixture.get("status") != "FINISHED":
+        return None
+    score = fixture.get("score") or {}
+    winner = score.get("winner")
+    if winner == "HOME_TEAM":
+        return "home"
+    if winner == "AWAY_TEAM":
+        return "away"
+    home_score = score.get("home")
+    away_score = score.get("away")
+    if home_score is None or away_score is None:
+        return None
+    if int(home_score) > int(away_score):
+        return "home"
+    if int(away_score) > int(home_score):
+        return "away"
+    return None
+
+
+def _fixture_sort_key(fixture: dict[str, Any]) -> tuple[str, str]:
+    return (str(fixture.get("kickoff") or ""), str(fixture.get("id") or ""))
+
+
+def _play_real_knockout_round(
+    round_name: str,
+    fixtures: list[dict[str, Any]],
+    repository: Any,
+    learned_model: Any | None,
+) -> tuple[dict[str, Any], list[BracketTeam]]:
+    matches = []
+    winners = []
+    for index, fixture in enumerate(sorted(fixtures, key=_fixture_sort_key)):
+        prediction = predict_match(
+            fixture["id"],
+            repository.get_team_features(fixture["home_team_id"]),
+            repository.get_team_features(fixture["away_team_id"]),
+            learned_model=learned_model,
+        )
+        actual_side = _actual_knockout_winner(fixture)
+        if actual_side:
+            side = actual_side
+            probability = 1.0
+        else:
+            side, probability = _knockout_probability(prediction)
+        winner_id = fixture["home_team_id"] if side == "home" else fixture["away_team_id"]
+        winner_name = fixture["home_team"] if side == "home" else fixture["away_team"]
+        winner = BracketTeam(
+            team_id=winner_id,
+            team_name=winner_name,
+            seed_label="",
+            path_probability=probability,
+        )
+        winners.append(winner)
+        matches.append(
+            {
+                "slot": index + 1,
+                "fixture_id": fixture["id"],
+                "provider_fixture_id": fixture.get("provider_fixture_id"),
+                "status": fixture.get("status"),
+                "score": fixture.get("score"),
+                "kickoff": fixture.get("kickoff"),
+                "source": "real-fixture",
+                "home_team": fixture["home_team"],
+                "home_seed": "",
+                "away_team": fixture["away_team"],
+                "away_seed": "",
+                "winner": winner.team_name,
+                "winner_probability": _round(probability),
+                "expected_goals": prediction["expected_goals"],
+            }
+        )
+    return {"round": round_name, "matches": matches}, winners
+
+
+def _real_knockout_fixtures(fixtures: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    rounds = {round_name: [] for round_name in KNOCKOUT_ROUND_ORDER}
+    for fixture in fixtures:
+        round_name = _knockout_round(str(fixture.get("stage") or ""))
+        if round_name:
+            rounds[round_name].append(fixture)
+    return rounds
+
+
 def _play_round(
     round_name: str,
     teams: list[BracketTeam],
@@ -160,8 +262,9 @@ def _play_round(
 
 
 def build_tournament_projection(repository: Any, learned_model: Any | None = None) -> dict[str, Any]:
+    fixtures = repository.list_fixtures()
     standings: dict[str, dict[str, TeamStanding]] = {}
-    for fixture in repository.list_fixtures():
+    for fixture in fixtures:
         group = _group_label(str(fixture.get("stage") or ""))
         if not group:
             continue
@@ -221,11 +324,25 @@ def build_tournament_projection(repository: Any, learned_model: Any | None = Non
         left += 1
         right -= 1
 
+    real_rounds = _real_knockout_fixtures(fixtures)
+    has_real_knockout = any(real_rounds[round_name] for round_name in KNOCKOUT_ROUND_ORDER)
+
     bracket = []
     teams = paired
-    for round_name in ("Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Final"):
-        round_payload, teams = _play_round(round_name, teams, repository, learned_model)
-        bracket.append(round_payload)
+    if has_real_knockout:
+        for round_name in KNOCKOUT_ROUND_ORDER:
+            if real_rounds[round_name]:
+                round_payload, teams = _play_real_knockout_round(round_name, real_rounds[round_name], repository, learned_model)
+            elif len(teams) >= 2 and len(teams) % 2 == 0:
+                round_payload, teams = _play_round(round_name, teams, repository, learned_model)
+            else:
+                round_payload = {"round": round_name, "matches": []}
+                teams = []
+            bracket.append(round_payload)
+    else:
+        for round_name in KNOCKOUT_ROUND_ORDER:
+            round_payload, teams = _play_round(round_name, teams, repository, learned_model)
+            bracket.append(round_payload)
 
     champion = teams[0] if teams else BracketTeam("", "", "")
     return {
@@ -240,6 +357,6 @@ def build_tournament_projection(repository: Any, learned_model: Any | None = Non
         },
         "notes": [
             "Group rankings combine actual scores when present with model expected points for unplayed fixtures.",
-            "Knockout bracket is a deterministic projection from current group rankings, not an official FIFA slot confirmation.",
+            "Knockout bracket uses synced real fixtures when assigned, with model projection filling unplayed outcomes.",
         ],
     }

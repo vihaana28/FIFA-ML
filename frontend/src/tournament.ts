@@ -9,3 +9,13 @@ export function qualificationLabel(state: QualificationState): string {
 export function winnerTone(teamName: string, winner: string): 'winner' | 'challenger' {
   return teamName === winner ? 'winner' : 'challenger'
 }
+
+export function bracketScoreLabel(
+  score?: { home: number | null; away: number | null },
+  status?: string,
+): string {
+  if (score?.home !== null && score?.home !== undefined && score?.away !== null && score?.away !== undefined) {
+    return `${status === 'FINISHED' ? 'FT ' : ''}${score.home}-${score.away}`
+  }
+  return status ?? ''
+}

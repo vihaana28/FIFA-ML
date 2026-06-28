@@ -16,7 +16,7 @@ jobs:
         run: |
           test -n "$PROD_URL"
           test -n "$CRON_SECRET"
-          curl --fail --show-error --silent \
+          curl --fail-with-body --show-error --silent --max-time 240 \
             --request POST \
             --header "Authorization: Bearer $CRON_SECRET" \
             "${PROD_URL%/}/admin/cron/train"

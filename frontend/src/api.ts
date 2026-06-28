@@ -132,6 +132,12 @@ export type GroupProjectionTeam = {
 
 export type BracketMatch = {
   slot: number
+  fixture_id?: string
+  provider_fixture_id?: string
+  status?: string
+  score?: { home: number | null; away: number | null; winner?: string | null }
+  kickoff?: string
+  source?: string
   home_team: string
   home_seed: string
   away_team: string
